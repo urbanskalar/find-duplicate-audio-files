@@ -19,6 +19,7 @@ import csv
 from tqdm import tqdm
 import os
 import numpy as np
+import pickle
 
 def levenshtein(seq1, seq2):
     size_x = len(seq1) + 1
@@ -75,39 +76,63 @@ def getFingerprint():
     file = jobQueue.get()
 
     messageQueue.put([0, file])
-
-    try:
-        duration, fp_encoded = acoustid.fingerprint_file(file)
-        fingerprint, version = chromaprint.decode_fingerprint(fp_encoded)
+    
+    
+    # Check if fingerprint already stored in temporary progress directory
+    if os.path.exists(PROGRESS_PATH + file + '.p'):
+        file_p = open(PROGRESS_PATH + file + '.p', 'rb')
+        fingerprint = pickle.load(file_p)
+        file_p.close()
         resultsQueue.put([file, fingerprint])
-    except Exception as e:
         
-        if os.path.exists(LOG_PATH):
-            append_write = 'a' # append if already exists
-        else:
-            append_write = 'w' # make a new file if not
+    else:
+
+        try:
+            duration, fp_encoded = acoustid.fingerprint_file(file)
+            fingerprint, version = chromaprint.decode_fingerprint(fp_encoded)
+            file_p = open(PROGRESS_PATH + file + '.p', 'wb')
+            pickle.dump(fingerprint, file_p)
+            file_p.close()
+            resultsQueue.put([file, fingerprint])
+        except Exception as e:
         
-        # Open txt file for logging
-        log = open(LOG_PATH,append_write)
+            if os.path.exists(LOG_PATH):
+                append_write = 'a' # append if already exists
+            else:
+                append_write = 'w' # make a new file if not
+        
+            # Open txt file for logging
+            log = open(LOG_PATH,append_write)
 
-        log.writelines('Error: "' + str(e) + '" while processing file: ' + file + "\n")
-        messageQueue.put([0, 'Error: "' + str(e) + '" while processing file: ' + file + "\n"])
+            log.writelines('Error: "' + str(e) + '" while processing file: ' + file + "\n")
+            messageQueue.put([0, 'Error: "' + str(e) + '" while processing file: ' + file + "\n"])
 
-        # Close log file
-        log.close()
+            # Close log file
+            log.close()
 
-        resultsQueue.put([])
-    finally:
-        pass
+            resultsQueue.put([])
+        finally:
+            pass
 
 def compareFingerprints():
 
     candidate1, candidate2 = jobQueue.get()
-    messageQueue.put([1, candidate1[0] + ' vs ' + candidate2[0]])
-    fingerprintSimilarity = fuzz.ratio(candidate1[1], candidate2[1])
     
-    levenshteinSimilariry = levenshtein(os.path.splitext(candidate1[0])[0], os.path.splitext(candidate2[0])[0])
-
+    messageQueue.put([1, candidate1[0] + ' vs ' + candidate2[0]])
+    
+    # Check if result for current candidates already processed
+    if os.path.exists(PROGRESS_PATH + (candidate1[0] + '_vs_' + candidate2[0]).replace('.', '_').replace('/', '_') + '.p'):
+        file_p = open(PROGRESS_PATH + (candidate1[0] + '_vs_' + candidate2[0]).replace('.', '_').replace('/', '_') + '.p', 'rb')
+        [fingerprintSimilarity, levenshteinSimilariry] = pickle.load(file_p)
+        file_p.close()
+    
+    else:
+        fingerprintSimilarity = fuzz.ratio(candidate1[1], candidate2[1])
+        levenshteinSimilariry = levenshtein(os.path.splitext(candidate1[0])[0], os.path.splitext(candidate2[0])[0])
+        file_p = open(PROGRESS_PATH + (candidate1[0] + '_vs_' + candidate2[0]).replace('.', '_').replace('/', '_') + '.p', 'wb')
+        pickle.dump([fingerprintSimilarity, levenshteinSimilariry], file_p)
+        file_p.close()
+		
     resultsQueue.put([candidate1[0], candidate2[0], fingerprintSimilarity, levenshteinSimilariry])
 
 def newJobGenerator(rawData):
@@ -122,21 +147,26 @@ def newJobGenerator(rawData):
 
 
 if __name__ == "__main__":
-
-	# Settings
+    
+    # Settings
     CPU_COUNT = os.cpu_count()
     MUSIC_PATH = './*'
     LOG_PATH = './log.txt'
     RESULTS_PATH = './results.csv'
     FILE_EXTENSIONS = ['mp3', 'aac', 'm4a', 'ogg', 'wav', 'flac', 'vorbis', 'opus']
-	 
-	# Fingerprint and other data of each processed files are saved in this list
+    PROGRESS_PATH = './progress/'
+    
+    # Make directory to store temporary progress data
+    if not os.path.exists(PROGRESS_PATH):
+        os.mkdir(PROGRESS_PATH)
+     
+    # Fingerprint and other data of each processed files are saved in this list
     rawData = []
 
     # Fingerprint comparision results are stored here
     comparisionData = []
-	
-	# List of all audio files in specified dir
+    
+    # List of all audio files in specified dir
     fileList = []
     for EXTENSION in FILE_EXTENSIONS:
         fileList = fileList + glob.glob(MUSIC_PATH + '.' + EXTENSION)
@@ -162,7 +192,6 @@ if __name__ == "__main__":
 
     # Collect results
     for i in range(len(fileList)):
-        #tqdm.write("i: " + str(i) + ' len:' + str(len(fileList)))
         result = resultsQueue.get()
         if result:
             rawData.append(result)
