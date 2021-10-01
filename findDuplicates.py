@@ -1,4 +1,4 @@
-!/usr/bin/env python3
+#!/usr/bin/python3
 
 """
 A python script that calculates similarity score by trying to match every
