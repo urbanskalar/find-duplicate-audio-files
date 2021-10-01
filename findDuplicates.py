@@ -249,3 +249,4 @@ if __name__ == "__main__":
         writer.writerows(sortedData)
         csvfile.close()
 
+    tqdm.write('If you finished your analysis you can now delete temporary files in "' + PROGRESS_PATH + '" directory')
