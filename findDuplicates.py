@@ -1,10 +1,20 @@
-#!/usr/bin/env python3
+!/usr/bin/env python3
 
-# To make this work execute the following steps:
-# sudo apt install ffmpeg acoustid-fingerprinter
-# pip3 install pyacoustid
-# pip3 install fuzzywuzzy[speedup]
-# pip3 install tqdm
+"""
+A python script that calculates similarity score by trying to match every
+audio file to every other audio file in current directory. Convenient way
+to find duplicates in personal music collection. 
+
+Script will return two similarity scores. First one and the most accurate
+is comparision between music fingerprints and the second on is Levenshtein
+distance between file names.
+
+Among other, you will also have to install the following:
+sudo apt install ffmpeg acoustid-fingerprinter
+pip3 install pyacoustid
+pip3 install fuzzywuzzy[speedup]
+pip3 install tqdm
+"""
 
 from multiprocessing import Process, Pool, Queue
 from functools import partial
@@ -22,6 +32,13 @@ import numpy as np
 import pickle
 
 def levenshtein(seq1, seq2):
+    """
+    the Levenshtein distance is a string metric for measuring the difference
+    between two sequences. Informally, the Levenshtein distance between two
+    words is the minimum number of single-character edits (insertions,
+    deletions or substitutions) required to change one word into the other.
+	"""
+	
     size_x = len(seq1) + 1
     size_y = len(seq2) + 1
     matrix = np.zeros ((size_x, size_y))
@@ -48,6 +65,9 @@ def levenshtein(seq1, seq2):
 
 
 def progressBarMessenger(barSize, descripton):
+    """
+    This function updates progress bar and prints progress texts.
+    """
 
     currentBarTicks = [] 
     progressBar = []
@@ -72,22 +92,36 @@ def progressBarMessenger(barSize, descripton):
         bar.close()
 
 def getFingerprint():
-
+    """
+    This function runs in a multiprocess pool and fingerprints music.
+    """
+	
+	# Get file name from queue of jobs
     file = jobQueue.get()
 
+    # Send file name to message queue to be displayed in terminal
     messageQueue.put([0, file])
     
-    
+	"""
+    All fingerprint data is stored on disk in case script is accidently terminated.
+    Here we check if data for current file is already saved on the disk and load it
+    to save time.
+	"""
     # Check if fingerprint already stored in temporary progress directory
     if os.path.exists(PROGRESS_PATH + file + '.p'):
         file_p = open(PROGRESS_PATH + file + '.p', 'rb')
         fingerprint = pickle.load(file_p)
         file_p.close()
+		# Put fingerprint into results queue for further processing
         resultsQueue.put([file, fingerprint])
         
     else:
 
         try:
+			"""
+			Fingerprint audio file, save result on disk for cases of emergency and
+			put it into results queue for further processing.
+			"""
             duration, fp_encoded = acoustid.fingerprint_file(file)
             fingerprint, version = chromaprint.decode_fingerprint(fp_encoded)
             file_p = open(PROGRESS_PATH + file + '.p', 'wb')
@@ -95,6 +129,12 @@ def getFingerprint():
             file_p.close()
             resultsQueue.put([file, fingerprint])
         except Exception as e:
+		
+			"""
+			For some reason there is problem with some files and consequently cannot be
+			fingerprinted. When this happens, exception occurs and is saved in log file
+			to be mannually checked afterwards.
+			"""
         
             if os.path.exists(LOG_PATH):
                 append_write = 'a' # append if already exists
@@ -103,9 +143,11 @@ def getFingerprint():
         
             # Open txt file for logging
             log = open(LOG_PATH,append_write)
-
+			
+			# Write to log file
             log.writelines('Error: "' + str(e) + '" while processing file: ' + file + "\n")
-            messageQueue.put([0, 'Error: "' + str(e) + '" while processing file: ' + file + "\n"])
+            # Send message to message queue to be displayed in terminal
+			messageQueue.put([0, 'Error: "' + str(e) + '" while processing file: ' + file + "\n"])
 
             # Close log file
             log.close()
@@ -115,28 +157,53 @@ def getFingerprint():
             pass
 
 def compareFingerprints():
+    """
+    This function runs in a multiprocess pool and compares fingerprints and returns scores
+    """
 
+	# Get comparision candidates from job queue
     candidate1, candidate2 = jobQueue.get()
     
+	# Put candidates in message queue to be displayed in terminal
     messageQueue.put([1, candidate1[0] + ' vs ' + candidate2[0]])
     
     # Check if result for current candidates already processed
     if os.path.exists(PROGRESS_PATH + (candidate1[0] + '_vs_' + candidate2[0]).replace('.', '_').replace('/', '_') + '.p'):
+		"""
+		All fingerprint comparision data is stored on disk in case script is accidently terminated.
+		Here we check if data for current fingerprint comparision is already saved on the disk and
+		load it to save time.
+		"""
         file_p = open(PROGRESS_PATH + (candidate1[0] + '_vs_' + candidate2[0]).replace('.', '_').replace('/', '_') + '.p', 'rb')
         [fingerprintSimilarity, levenshteinSimilariry] = pickle.load(file_p)
         file_p.close()
     
     else:
+		"""
+		Calculate similarity scores and save result on disk for cases of emergency.
+		"""
+		# Calculate fingerprint similarity
         fingerprintSimilarity = fuzz.ratio(candidate1[1], candidate2[1])
+		# Calculate Levenshtein similarity
         levenshteinSimilariry = levenshtein(os.path.splitext(candidate1[0])[0], os.path.splitext(candidate2[0])[0])
+		# Save similarity scores on disc
         file_p = open(PROGRESS_PATH + (candidate1[0] + '_vs_' + candidate2[0]).replace('.', '_').replace('/', '_') + '.p', 'wb')
         pickle.dump([fingerprintSimilarity, levenshteinSimilariry], file_p)
         file_p.close()
 		
+	# Put similarity scores into results queue
     resultsQueue.put([candidate1[0], candidate2[0], fingerprintSimilarity, levenshteinSimilariry])
 
 def newJobGenerator(rawData):
-    
+    """
+    This function generates pairs for comparision. These pairs represent jobs that are
+    executed in multiprocess pool.
+	"""
+	
+	"""
+	First for loop loops over all files. Second loop loops only over files behind index of first
+	for loop. This assures we don't get double scores for file pairs we already analysed.
+    """
     comparisionPairs =[]        
     for candidate1_index in range(0, len(rawData)):
         for candidate2_index in range(candidate1_index+1, len(rawData)):
@@ -154,7 +221,7 @@ if __name__ == "__main__":
     LOG_PATH = './log.txt'
     RESULTS_PATH = './results.csv'
     FILE_EXTENSIONS = ['mp3', 'aac', 'm4a', 'ogg', 'wav', 'flac', 'vorbis', 'opus']
-    PROGRESS_PATH = './progress/'
+    PROGRESS_PATH = './tempProgressData/'
     
     # Make directory to store temporary progress data
     if not os.path.exists(PROGRESS_PATH):
